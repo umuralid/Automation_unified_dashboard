@@ -25,7 +25,7 @@ export $(grep -v '^#' .env | xargs)
 python3 app.py
 ```
 
-Open **http://localhost:5050** in your browser.
+Open **http://localhost:**** in your browser.
 
 ## Configuration
 
