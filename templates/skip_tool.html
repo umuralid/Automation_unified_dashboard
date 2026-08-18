@@ -1,0 +1,425 @@
+{% extends "base.html" %}
+{% block title %}Skip Tool - Mozart Dashboard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>⏭️ Skip Tool</h2>
+    <p>Skip & unskip test cases in Mozart test suites</p>
+</div>
+
+<!-- Tab Navigation -->
+<div style="display: flex; gap: 0; margin-bottom: 24px; background: var(--bg-secondary); border-radius: var(--radius-sm); padding: 4px; width: fit-content; border: 1px solid var(--border);">
+    <button class="tab-btn" onclick="switchTab('skip')" id="tab-skip" style="padding: 10px 24px; border: none; background: linear-gradient(135deg, var(--primary), var(--primary-dark)); border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600; color: #fff; transition: all 0.2s;">
+        ⏭️ Skip Cases
+    </button>
+    <button class="tab-btn" onclick="switchTab('unskip')" id="tab-unskip" style="padding: 10px 24px; border: none; background: transparent; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text-muted); transition: all 0.2s;">
+        ↩️ Unskip Cases
+    </button>
+</div>
+
+<!-- ============= SKIP TAB ============= -->
+<div id="panel-skip">
+    <div class="card">
+        <h3>Data Source</h3>
+        <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 12px 18px; border: 1px solid var(--primary); border-radius: var(--radius-sm); background: var(--primary-glow); font-size: 13px; font-weight: 500; color: var(--primary-light);">
+                <input type="radio" name="skip-source" value="file" checked onchange="toggleSource()" style="accent-color: var(--primary);"> 📄 Upload JSON
+            </label>
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 12px 18px; border: 1px solid var(--border-light); border-radius: var(--radius-sm); background: transparent; font-size: 13px; font-weight: 500; color: var(--text-secondary);" id="source-testrail-label">
+                <input type="radio" name="skip-source" value="testrail" onchange="toggleSource()" style="accent-color: var(--primary);"> 🔗 TestRail Run
+            </label>
+        </div>
+
+        <!-- File Upload Source -->
+        <div id="source-file">
+            <div class="file-drop" id="st-drop-zone" onclick="document.getElementById('st-file-input').click()">
+                <div class="icon">📄</div>
+                <p><strong style="color: var(--text);">Click to upload</strong> or drag & drop</p>
+                <p style="font-size: 12px; margin-top: 4px; color: var(--text-muted);">auto_cut_jira_payload_*.json</p>
+            </div>
+            <input type="file" id="st-file-input" accept=".json" style="display: none;" onchange="handleSkipFile(this)">
+            <div id="st-file-name" style="margin-top: 10px; font-size: 13px; color: var(--text-secondary);"></div>
+        </div>
+
+        <!-- TestRail Source -->
+        <div id="source-testrail" style="display: none;">
+            <div style="background: var(--success-bg); border: 1px solid rgba(16,185,129,0.2); border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 13px; color: var(--success);">🔑 Using TestRail credentials from server environment</span>
+            </div>
+            <div class="form-group">
+                <label>TestRail Run ID</label>
+                <input type="number" id="st-testrail-run-id" placeholder="e.g. 12345">
+            </div>
+            <button class="btn btn-secondary" onclick="fetchFromTestRail()">🔗 Fetch Results</button>
+            <div class="loading" id="st-testrail-loading">
+                <div class="spinner"></div>
+                <span>Fetching from TestRail...</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="alert alert-success" id="st-fetch-success"></div>
+
+    <div class="card">
+        <h3>Target Suite</h3>
+        <div class="form-group">
+            <label>Mozart Suite Name</label>
+            <input type="text" id="st-suite-name" placeholder="e.g. My_Regression_Suite">
+        </div>
+        <div style="display: flex; gap: 12px;">
+            <button class="btn btn-primary" id="st-preview-btn" onclick="previewSkip()" disabled>
+                👁️ Preview Changes
+            </button>
+            <button class="btn btn-success" id="st-apply-btn" onclick="applySkip()" disabled style="display: none;">
+                ✅ Apply Skip
+            </button>
+        </div>
+        <div class="loading" id="st-loading">
+            <div class="spinner"></div>
+            <span>Processing via Mozart API...</span>
+        </div>
+    </div>
+
+    <div class="alert alert-error" id="st-error"></div>
+    <div class="alert alert-success" id="st-success"></div>
+
+    <div class="card" id="st-preview-results" style="display: none;">
+        <h3>Preview</h3>
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 20px;">
+            <div class="stat-box" style="background: var(--success-bg);">
+                <div class="stat-value" style="color: var(--success);" id="st-newly-skipped">-</div>
+                <div class="stat-label">Newly Skipped</div>
+            </div>
+            <div class="stat-box" style="background: var(--warning-bg);">
+                <div class="stat-value" style="color: var(--warning);" id="st-already-skipped">-</div>
+                <div class="stat-label">Already Skipped</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" style="color: var(--text-muted);" id="st-not-in-suite">-</div>
+                <div class="stat-label">Not in Suite</div>
+            </div>
+        </div>
+
+        <h3>Cases to Skip</h3>
+        <div id="st-case-list" style="max-height: 300px; overflow-y: auto; padding: 14px; background: rgba(15,23,42,0.5); border-radius: var(--radius-sm); border: 1px solid var(--border); font-size: 13px;"></div>
+    </div>
+</div>
+
+<!-- ============= UNSKIP TAB ============= -->
+<div id="panel-unskip" style="display: none;">
+    <div class="card">
+        <h3>Unskip All Cases</h3>
+        <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 18px;">
+            Remove the SKIP flag from all currently skipped test cases in a Mozart suite.
+        </p>
+        <div class="form-group">
+            <label>Mozart Suite Name</label>
+            <input type="text" id="us-suite-name" placeholder="e.g. My_Regression_Suite">
+        </div>
+        <div style="display: flex; gap: 12px;">
+            <button class="btn btn-primary" onclick="previewUnskip()">👁️ Preview Skipped Cases</button>
+            <button class="btn btn-danger" id="us-apply-btn" onclick="applyUnskip()" disabled style="display: none;">
+                ↩️ Unskip All
+            </button>
+        </div>
+        <div class="loading" id="us-loading">
+            <div class="spinner"></div>
+            <span>Querying Mozart API...</span>
+        </div>
+    </div>
+
+    <div class="alert alert-error" id="us-error"></div>
+    <div class="alert alert-success" id="us-success"></div>
+
+    <div class="card" id="us-results" style="display: none;">
+        <h3>Currently Skipped</h3>
+        <div class="stat-box" style="background: var(--danger-bg); margin-bottom: 20px; max-width: 200px;">
+            <div class="stat-value" style="color: var(--danger);" id="us-skipped-count">-</div>
+            <div class="stat-label">Skipped Cases</div>
+        </div>
+        <div style="overflow-x: auto; border-radius: var(--radius-sm); border: 1px solid var(--border);">
+            <table class="results-table">
+                <thead>
+                    <tr><th>#</th><th>Test Case</th><th>UUID</th></tr>
+                </thead>
+                <tbody id="us-table-body"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let skipFile = null;
+let previewData = null;
+let testrailFetched = false;
+
+function switchTab(tab) {
+    document.getElementById('panel-skip').style.display = tab === 'skip' ? 'block' : 'none';
+    document.getElementById('panel-unskip').style.display = tab === 'unskip' ? 'block' : 'none';
+    const skipBtn = document.getElementById('tab-skip');
+    const unskipBtn = document.getElementById('tab-unskip');
+    if (tab === 'skip') {
+        skipBtn.style.background = 'linear-gradient(135deg, var(--primary), var(--primary-dark))';
+        skipBtn.style.color = '#fff';
+        unskipBtn.style.background = 'transparent';
+        unskipBtn.style.color = 'var(--text-muted)';
+    } else {
+        unskipBtn.style.background = 'linear-gradient(135deg, var(--primary), var(--primary-dark))';
+        unskipBtn.style.color = '#fff';
+        skipBtn.style.background = 'transparent';
+        skipBtn.style.color = 'var(--text-muted)';
+    }
+}
+
+function toggleSource() {
+    const source = document.querySelector('input[name="skip-source"]:checked').value;
+    document.getElementById('source-file').style.display = source === 'file' ? 'block' : 'none';
+    document.getElementById('source-testrail').style.display = source === 'testrail' ? 'block' : 'none';
+    document.getElementById('st-preview-btn').disabled = source === 'file' ? !skipFile : !testrailFetched;
+}
+
+// Drag & drop
+const stDropZone = document.getElementById('st-drop-zone');
+stDropZone.addEventListener('dragover', (e) => { e.preventDefault(); stDropZone.classList.add('dragover'); });
+stDropZone.addEventListener('dragleave', () => { stDropZone.classList.remove('dragover'); });
+stDropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    stDropZone.classList.remove('dragover');
+    if (e.dataTransfer.files.length > 0 && e.dataTransfer.files[0].name.endsWith('.json')) {
+        skipFile = e.dataTransfer.files[0];
+        document.getElementById('st-file-name').textContent = `📎 ${skipFile.name}`;
+        document.getElementById('st-preview-btn').disabled = false;
+    }
+});
+
+function handleSkipFile(input) {
+    if (input.files.length > 0) {
+        skipFile = input.files[0];
+        document.getElementById('st-file-name').textContent = `📎 ${skipFile.name}`;
+        document.getElementById('st-preview-btn').disabled = false;
+    }
+}
+
+async function fetchFromTestRail() {
+    const runId = document.getElementById('st-testrail-run-id').value.trim();
+    if (!runId) { alert('Please enter a Run ID'); return; }
+
+    const loading = document.getElementById('st-testrail-loading');
+    const fetchSuccess = document.getElementById('st-fetch-success');
+    fetchSuccess.classList.remove('show');
+    loading.classList.add('show');
+
+    try {
+        const resp = await fetch('/api/skip-tool/testrail-fetch', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ run_id: runId })
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error || 'Unknown error');
+
+        testrailFetched = true;
+        document.getElementById('st-preview-btn').disabled = false;
+        fetchSuccess.textContent = `✅ Fetched ${data.summary.total} tests — ${data.summary.passed} passed, ${data.summary.failed} failed, ${data.summary.skipped} skipped`;
+        fetchSuccess.classList.add('show');
+    } catch (e) {
+        document.getElementById('st-error').textContent = '❌ ' + e.message;
+        document.getElementById('st-error').classList.add('show');
+    } finally {
+        loading.classList.remove('show');
+    }
+}
+
+async function previewSkip() {
+    const suiteName = document.getElementById('st-suite-name').value.trim();
+    if (!suiteName) {
+        document.getElementById('st-error').textContent = '❌ Please enter a suite name';
+        document.getElementById('st-error').classList.add('show');
+        return;
+    }
+
+    const source = document.querySelector('input[name="skip-source"]:checked').value;
+    const btn = document.getElementById('st-preview-btn');
+    const loading = document.getElementById('st-loading');
+    const errorDiv = document.getElementById('st-error');
+    const successDiv = document.getElementById('st-success');
+    const previewDiv = document.getElementById('st-preview-results');
+
+    errorDiv.classList.remove('show');
+    successDiv.classList.remove('show');
+    previewDiv.style.display = 'none';
+    btn.disabled = true;
+    loading.classList.add('show');
+
+    try {
+        let resp;
+        if (source === 'file') {
+            const formData = new FormData();
+            formData.append('file', skipFile);
+            formData.append('suite_name', suiteName);
+            resp = await fetch('/api/skip-tool/preview', { method: 'POST', body: formData });
+        } else {
+            resp = await fetch('/api/skip-tool/preview', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ suite_name: suiteName, source: 'testrail' })
+            });
+        }
+
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error || 'Unknown error');
+
+        previewData = data;
+        document.getElementById('st-newly-skipped').textContent = data.summary.newly_skipped_count;
+        document.getElementById('st-already-skipped').textContent = data.summary.already_skipped_count;
+        document.getElementById('st-not-in-suite').textContent = data.summary.not_in_suite_count;
+
+        const caseList = document.getElementById('st-case-list');
+        if (data.newly_skipped && data.newly_skipped.length > 0) {
+            caseList.innerHTML = data.newly_skipped.map(tc =>
+                `<div style="padding: 8px 0; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+                    <strong style="color: var(--text);">${tc.name}</strong>
+                    <span style="color: var(--text-muted); font-size: 12px;">${tc.className || ''}</span>
+                </div>`
+            ).join('');
+        } else {
+            caseList.innerHTML = '<p style="color: var(--text-muted);">All passed cases are already skipped.</p>';
+        }
+
+        previewDiv.style.display = 'block';
+        if (data.summary.newly_skipped_count > 0) {
+            document.getElementById('st-apply-btn').style.display = 'inline-flex';
+            document.getElementById('st-apply-btn').disabled = false;
+        }
+        successDiv.textContent = `✅ ${data.summary.newly_skipped_count} to skip, ${data.summary.already_skipped_count} already skipped`;
+        successDiv.classList.add('show');
+    } catch (e) {
+        errorDiv.textContent = '❌ ' + e.message;
+        errorDiv.classList.add('show');
+    } finally {
+        btn.disabled = false;
+        loading.classList.remove('show');
+    }
+}
+
+async function applySkip() {
+    if (!previewData) return;
+    if (!confirm(`Skip ${previewData.summary.newly_skipped_count} cases in "${previewData.suite_name}"?`)) return;
+
+    const btn = document.getElementById('st-apply-btn');
+    const loading = document.getElementById('st-loading');
+    const errorDiv = document.getElementById('st-error');
+    const successDiv = document.getElementById('st-success');
+
+    errorDiv.classList.remove('show'); successDiv.classList.remove('show');
+    btn.disabled = true; loading.classList.add('show');
+
+    try {
+        const resp = await fetch('/api/skip-tool/apply', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ suite_name: previewData.suite_name })
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error || 'Unknown error');
+
+        successDiv.textContent = `✅ ${data.message}`;
+        successDiv.classList.add('show');
+        btn.style.display = 'none';
+    } catch (e) {
+        errorDiv.textContent = '❌ ' + e.message;
+        errorDiv.classList.add('show');
+    } finally {
+        btn.disabled = false; loading.classList.remove('show');
+    }
+}
+
+// ============ UNSKIP ============
+async function previewUnskip() {
+    const suiteName = document.getElementById('us-suite-name').value.trim();
+    if (!suiteName) {
+        document.getElementById('us-error').textContent = '❌ Please enter a suite name';
+        document.getElementById('us-error').classList.add('show');
+        return;
+    }
+
+    const loading = document.getElementById('us-loading');
+    const errorDiv = document.getElementById('us-error');
+    const successDiv = document.getElementById('us-success');
+    const resultsDiv = document.getElementById('us-results');
+
+    errorDiv.classList.remove('show'); successDiv.classList.remove('show');
+    resultsDiv.style.display = 'none'; loading.classList.add('show');
+
+    try {
+        const resp = await fetch('/api/skip-tool/unskip-preview', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ suite_name: suiteName })
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error || 'Unknown error');
+
+        document.getElementById('us-skipped-count').textContent = data.skipped_count;
+        const tbody = document.getElementById('us-table-body');
+        tbody.innerHTML = '';
+        data.skipped_cases.forEach((tc, i) => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td style="color: var(--text-muted);">${i + 1}</td>
+                <td><strong style="color: var(--text);">${tc.name}</strong></td>
+                <td><code>${tc.uuid}</code></td>
+            `;
+            tbody.appendChild(row);
+        });
+
+        resultsDiv.style.display = 'block';
+        if (data.skipped_count > 0) {
+            document.getElementById('us-apply-btn').style.display = 'inline-flex';
+            document.getElementById('us-apply-btn').disabled = false;
+        }
+        successDiv.textContent = `✅ Found ${data.skipped_count} skipped case(s) in "${data.suite_name}"`;
+        successDiv.classList.add('show');
+    } catch (e) {
+        errorDiv.textContent = '❌ ' + e.message;
+        errorDiv.classList.add('show');
+    } finally {
+        loading.classList.remove('show');
+    }
+}
+
+async function applyUnskip() {
+    const suiteName = document.getElementById('us-suite-name').value.trim();
+    if (!confirm(`Unskip ALL cases in "${suiteName}"?`)) return;
+
+    const btn = document.getElementById('us-apply-btn');
+    const loading = document.getElementById('us-loading');
+    const errorDiv = document.getElementById('us-error');
+    const successDiv = document.getElementById('us-success');
+
+    errorDiv.classList.remove('show'); successDiv.classList.remove('show');
+    btn.disabled = true; loading.classList.add('show');
+
+    try {
+        const resp = await fetch('/api/skip-tool/unskip-apply', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ suite_name: suiteName })
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error || 'Unknown error');
+
+        successDiv.textContent = `✅ ${data.message}`;
+        successDiv.classList.add('show');
+        btn.style.display = 'none';
+    } catch (e) {
+        errorDiv.textContent = '❌ ' + e.message;
+        errorDiv.classList.add('show');
+    } finally {
+        btn.disabled = false; loading.classList.remove('show');
+    }
+}
+</script>
+{% endblock %}

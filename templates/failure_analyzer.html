@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}Failure Analyzer - Mozart Dashboard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>🔍 Failure Analyzer</h2>
+    <p>Upload a Mozart results ZIP for detailed failure analysis with root causes</p>
+</div>
+
+<div class="card">
+    <h3>Upload Results</h3>
+    <div class="file-drop" id="fa-drop-zone" onclick="document.getElementById('fa-file-input').click()">
+        <div class="icon">📁</div>
+        <p><strong style="color: var(--text);">Click to upload</strong> or drag & drop your ZIP file</p>
+        <p style="font-size: 12px; margin-top: 6px; color: var(--text-muted);">Mozart results ZIP • Max 500MB</p>
+    </div>
+    <input type="file" id="fa-file-input" accept=".zip" style="display: none;" onchange="handleFileSelect(this)">
+    <div id="fa-file-name" style="margin-top: 10px; font-size: 13px; color: var(--text-secondary);"></div>
+
+    <button class="btn btn-primary" id="fa-analyze-btn" onclick="analyzeFailures()" style="margin-top: 18px;" disabled>
+        🔬 Analyze Failures
+    </button>
+    <div class="loading" id="fa-loading">
+        <div class="spinner"></div>
+        <span>Parsing logs and extracting root causes...</span>
+    </div>
+</div>
+
+<div class="alert alert-error" id="fa-error"></div>
+<div class="alert alert-success" id="fa-success"></div>
+
+<div class="card" id="fa-results" style="display: none;">
+    <h3>Analysis Summary</h3>
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 24px;">
+        <div class="stat-box" style="background: var(--success-bg);">
+            <div class="stat-value" style="color: var(--success);" id="fa-passed">-</div>
+            <div class="stat-label">Passed</div>
+        </div>
+        <div class="stat-box" style="background: var(--danger-bg);">
+            <div class="stat-value" style="color: var(--danger);" id="fa-failed">-</div>
+            <div class="stat-label">Failed</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value" style="color: var(--text);" id="fa-total">-</div>
+            <div class="stat-label">Total</div>
+        </div>
+    </div>
+
+    <h3>Failure Details</h3>
+    <div style="overflow-x: auto; border-radius: var(--radius-sm); border: 1px solid var(--border);">
+        <table class="results-table">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Test Case</th>
+                    <th>Category</th>
+                    <th>Root Cause</th>
+                    <th>Error</th>
+                </tr>
+            </thead>
+            <tbody id="fa-table-body"></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let selectedFile = null;
+const dropZone = document.getElementById('fa-drop-zone');
+
+dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => { dropZone.classList.remove('dragover'); });
+dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    if (e.dataTransfer.files.length > 0 && e.dataTransfer.files[0].name.endsWith('.zip')) {
+        selectedFile = e.dataTransfer.files[0];
+        document.getElementById('fa-file-name').textContent = `📎 ${selectedFile.name} (${(selectedFile.size / 1024 / 1024).toFixed(1)}MB)`;
+        document.getElementById('fa-analyze-btn').disabled = false;
+    }
+});
+
+function handleFileSelect(input) {
+    if (input.files.length > 0) {
+        selectedFile = input.files[0];
+        document.getElementById('fa-file-name').textContent = `📎 ${selectedFile.name} (${(selectedFile.size / 1024 / 1024).toFixed(1)}MB)`;
+        document.getElementById('fa-analyze-btn').disabled = false;
+    }
+}
+
+async function analyzeFailures() {
+    if (!selectedFile) return;
+    const btn = document.getElementById('fa-analyze-btn');
+    const loading = document.getElementById('fa-loading');
+    const errorDiv = document.getElementById('fa-error');
+    const successDiv = document.getElementById('fa-success');
+    const resultsDiv = document.getElementById('fa-results');
+
+    errorDiv.classList.remove('show');
+    successDiv.classList.remove('show');
+    resultsDiv.style.display = 'none';
+    btn.disabled = true;
+    loading.classList.add('show');
+
+    const formData = new FormData();
+    formData.append('file', selectedFile);
+
+    try {
+        const resp = await fetch('/api/failure-analyzer/upload', { method: 'POST', body: formData });
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error || 'Unknown error');
+
+        document.getElementById('fa-passed').textContent = data.summary.passed;
+        document.getElementById('fa-failed').textContent = data.summary.failed;
+        document.getElementById('fa-total').textContent = data.summary.total;
+
+        const tbody = document.getElementById('fa-table-body');
+        tbody.innerHTML = '';
+        data.results.forEach((r, i) => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td style="color: var(--text-muted);">${i + 1}</td>
+                <td><strong style="color: var(--text);">${r.test_name || r.class_name || 'N/A'}</strong></td>
+                <td><span class="badge badge-warning">${r.category || r.failure_category || 'Unknown'}</span></td>
+                <td style="color: var(--text-secondary);">${r.root_cause || r.failure_reason || '-'}</td>
+                <td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted);" title="${(r.error_message || r.error || '').replace(/"/g, '&quot;')}">${r.error_message || r.error || '-'}</td>
+            `;
+            tbody.appendChild(row);
+        });
+
+        resultsDiv.style.display = 'block';
+        successDiv.textContent = `✅ ${data.summary.failed} failure(s) analyzed from ${data.summary.total} total tests.`;
+        successDiv.classList.add('show');
+    } catch (e) {
+        errorDiv.textContent = '❌ ' + e.message;
+        errorDiv.classList.add('show');
+    } finally {
+        btn.disabled = false;
+        loading.classList.remove('show');
+    }
+}
+</script>
+{% endblock %}

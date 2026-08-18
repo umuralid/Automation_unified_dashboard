@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% block title %}Milestone Audit - Mozart Dashboard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>📊 Milestone Audit</h2>
+    <p>Compare two TestRail milestones and find status deviations</p>
+</div>
+
+<div class="card">
+    <h3>TestRail Configuration</h3>
+    <div style="background: var(--success-bg); border: 1px solid rgba(16,185,129,0.2); border-radius: var(--radius-sm); padding: 12px 16px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
+        <span>🔑</span>
+        <span style="font-size: 13px; color: var(--success);">Using TestRail credentials from server environment</span>
+    </div>
+    <div class="form-group">
+        <label>Project ID</label>
+        <input type="number" id="ma-project" placeholder="e.g. 2">
+    </div>
+    <div class="form-row">
+        <div class="form-group">
+            <label>Milestone 1 ID (Baseline)</label>
+            <input type="number" id="ma-milestone1" placeholder="e.g. 1234">
+        </div>
+        <div class="form-group">
+            <label>Milestone 2 ID (Comparison)</label>
+            <input type="number" id="ma-milestone2" placeholder="e.g. 5678">
+        </div>
+    </div>
+    <button class="btn btn-primary" id="ma-run-btn" onclick="runMilestoneAudit()">
+        🚀 Run Comparison
+    </button>
+    <div class="loading" id="ma-loading">
+        <div class="spinner"></div>
+        <span>Fetching milestone data from TestRail... This may take a few minutes.</span>
+    </div>
+</div>
+
+<div class="alert alert-error" id="ma-error"></div>
+<div class="alert alert-success" id="ma-success"></div>
+
+<div class="card" id="ma-results" style="display: none;">
+    <h3>Results</h3>
+    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px;">
+        <div class="stat-box" style="background: var(--info-bg);">
+            <div class="stat-value" style="color: var(--info);" id="ma-total-m1">-</div>
+            <div class="stat-label" id="ma-m1-label">Milestone 1</div>
+        </div>
+        <div class="stat-box" style="background: var(--info-bg);">
+            <div class="stat-value" style="color: var(--info);" id="ma-total-m2">-</div>
+            <div class="stat-label" id="ma-m2-label">Milestone 2</div>
+        </div>
+        <div class="stat-box" style="background: var(--success-bg);">
+            <div class="stat-value" style="color: var(--success);" id="ma-common">-</div>
+            <div class="stat-label">Common Cases</div>
+        </div>
+        <div class="stat-box" style="background: var(--danger-bg);">
+            <div class="stat-value" style="color: var(--danger);" id="ma-deviations">-</div>
+            <div class="stat-label">Deviations</div>
+        </div>
+    </div>
+
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="margin: 0;">Deviation Details</h3>
+        <button class="btn btn-secondary" onclick="exportCSV()">📥 Export CSV</button>
+    </div>
+    <div style="overflow-x: auto; border-radius: var(--radius-sm); border: 1px solid var(--border);">
+        <table class="results-table" id="ma-table">
+            <thead>
+                <tr>
+                    <th>Case ID</th>
+                    <th>Title</th>
+                    <th>M1 Status</th>
+                    <th>M1 Run</th>
+                    <th>M2 Status</th>
+                    <th>M2 Run</th>
+                </tr>
+            </thead>
+            <tbody id="ma-table-body"></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let auditData = null;
+
+async function runMilestoneAudit() {
+    const btn = document.getElementById('ma-run-btn');
+    const loading = document.getElementById('ma-loading');
+    const errorDiv = document.getElementById('ma-error');
+    const successDiv = document.getElementById('ma-success');
+    const resultsDiv = document.getElementById('ma-results');
+
+    errorDiv.classList.remove('show');
+    successDiv.classList.remove('show');
+    resultsDiv.style.display = 'none';
+    btn.disabled = true;
+    loading.classList.add('show');
+
+    const payload = {
+        project_id: document.getElementById('ma-project').value,
+        milestone_id_1: document.getElementById('ma-milestone1').value,
+        milestone_id_2: document.getElementById('ma-milestone2').value,
+    };
+
+    try {
+        const resp = await fetch('/api/milestone-audit/run', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error || 'Unknown error');
+
+        auditData = data;
+        document.getElementById('ma-total-m1').textContent = data.total_m1;
+        document.getElementById('ma-total-m2').textContent = data.total_m2;
+        document.getElementById('ma-common').textContent = data.common;
+        document.getElementById('ma-deviations').textContent = data.deviations.length;
+        document.getElementById('ma-m1-label').textContent = data.m1_name;
+        document.getElementById('ma-m2-label').textContent = data.m2_name;
+
+        const tbody = document.getElementById('ma-table-body');
+        tbody.innerHTML = '';
+        data.deviations.forEach(d => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td><strong style="color: var(--primary-light);">C${d.case_id}</strong></td>
+                <td>${d.title}</td>
+                <td><span class="badge ${d.m1_status === 'Passed' ? 'badge-success' : 'badge-danger'}">${d.m1_status}</span></td>
+                <td style="color: var(--text-muted);">${d.m1_run}</td>
+                <td><span class="badge ${d.m2_status === 'Passed' ? 'badge-success' : 'badge-danger'}">${d.m2_status}</span></td>
+                <td style="color: var(--text-muted);">${d.m2_run}</td>
+            `;
+            tbody.appendChild(row);
+        });
+
+        resultsDiv.style.display = 'block';
+        successDiv.textContent = `✅ Found ${data.deviations.length} deviation(s) out of ${data.common} common cases.`;
+        successDiv.classList.add('show');
+    } catch (e) {
+        errorDiv.textContent = '❌ ' + e.message;
+        errorDiv.classList.add('show');
+    } finally {
+        btn.disabled = false;
+        loading.classList.remove('show');
+    }
+}
+
+function exportCSV() {
+    if (!auditData) return;
+    let csv = 'Case ID,Title,M1 Status,M1 Run,M2 Status,M2 Run\n';
+    auditData.deviations.forEach(d => {
+        csv += `${d.case_id},"${d.title}",${d.m1_status},"${d.m1_run}",${d.m2_status},"${d.m2_run}"\n`;
+    });
+    const blob = new Blob([csv], {type: 'text/csv'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `milestone_audit_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+}
+</script>
+{% endblock %}

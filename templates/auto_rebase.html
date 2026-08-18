@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+{% block title %}Auto Rebase - Mozart Dashboard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>🔄 Auto Rebase</h2>
+    <p>Rebase all mozart-workspace projects onto mainline</p>
+</div>
+
+<div class="card">
+    <h3>Workspace</h3>
+    <div style="display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="color: var(--text-muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">Path</span>
+            <code>{{ workspace_path }}</code>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="color: var(--text-muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">Remote</span>
+            <code>{{ git_remote }}</code>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="color: var(--text-muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">Branch</span>
+            <code>mainline</code>
+        </div>
+    </div>
+
+    <div style="display: flex; gap: 12px;">
+        <button class="btn btn-secondary" onclick="checkStatus()">📡 Check Status</button>
+        <button class="btn btn-primary" id="ar-rebase-btn" onclick="runRebase()">🔄 Rebase All</button>
+    </div>
+    <div class="loading" id="ar-loading">
+        <div class="spinner"></div>
+        <span>Running git operations...</span>
+    </div>
+</div>
+
+<div class="alert alert-error" id="ar-error"></div>
+<div class="alert alert-success" id="ar-success"></div>
+
+<div class="card" id="ar-status" style="display: none;">
+    <h3>Project Status</h3>
+    <div style="overflow-x: auto; border-radius: var(--radius-sm); border: 1px solid var(--border);">
+        <table class="results-table">
+            <thead>
+                <tr><th>Project</th><th>Branch</th><th>Status</th><th>Select</th></tr>
+            </thead>
+            <tbody id="ar-status-body"></tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card" id="ar-results" style="display: none;">
+    <h3>Rebase Results</h3>
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 24px;">
+        <div class="stat-box" style="background: var(--success-bg);">
+            <div class="stat-value" style="color: var(--success);" id="ar-success-count">0</div>
+            <div class="stat-label">Succeeded</div>
+        </div>
+        <div class="stat-box" style="background: var(--danger-bg);">
+            <div class="stat-value" style="color: var(--danger);" id="ar-failed-count">0</div>
+            <div class="stat-label">Failed</div>
+        </div>
+        <div class="stat-box" style="background: var(--warning-bg);">
+            <div class="stat-value" style="color: var(--warning);" id="ar-skipped-count">0</div>
+            <div class="stat-label">Skipped</div>
+        </div>
+    </div>
+    <div style="overflow-x: auto; border-radius: var(--radius-sm); border: 1px solid var(--border);">
+        <table class="results-table">
+            <thead>
+                <tr><th>Project</th><th>Result</th><th>Message</th></tr>
+            </thead>
+            <tbody id="ar-results-body"></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function checkStatus() {
+    const loading = document.getElementById('ar-loading');
+    const errorDiv = document.getElementById('ar-error');
+    const statusDiv = document.getElementById('ar-status');
+
+    errorDiv.classList.remove('show');
+    loading.classList.add('show');
+    statusDiv.style.display = 'none';
+
+    try {
+        const resp = await fetch('/api/auto-rebase/status');
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error || 'Unknown error');
+
+        const tbody = document.getElementById('ar-status-body');
+        tbody.innerHTML = '';
+        data.projects.forEach(p => {
+            const row = document.createElement('tr');
+            let badge = '';
+            if (p.status === 'clean') badge = '<span class="badge badge-success">Clean</span>';
+            else if (p.status === 'dirty') badge = '<span class="badge badge-warning">Dirty</span>';
+            else if (p.status === 'not_a_repo') badge = '<span class="badge badge-info">Not a repo</span>';
+            else badge = `<span class="badge badge-danger">${p.status}</span>`;
+
+            row.innerHTML = `
+                <td><strong style="color: var(--text);">${p.project}</strong></td>
+                <td><code>${p.branch}</code></td>
+                <td>${badge}</td>
+                <td><input type="checkbox" class="ar-project-check" value="${p.project}" ${p.status !== 'not_a_repo' ? 'checked' : 'disabled'} style="accent-color: var(--primary); width: 16px; height: 16px;"></td>
+            `;
+            tbody.appendChild(row);
+        });
+        statusDiv.style.display = 'block';
+    } catch (e) {
+        errorDiv.textContent = '❌ ' + e.message;
+        errorDiv.classList.add('show');
+    } finally {
+        loading.classList.remove('show');
+    }
+}
+
+async function runRebase() {
+    const checkboxes = document.querySelectorAll('.ar-project-check:checked');
+    let projects = [];
+    checkboxes.forEach(cb => projects.push(cb.value));
+
+    if (!confirm(`Rebase ${projects.length || 'all'} project(s) onto {{ git_remote }}/mainline?`)) return;
+
+    const btn = document.getElementById('ar-rebase-btn');
+    const loading = document.getElementById('ar-loading');
+    const errorDiv = document.getElementById('ar-error');
+    const successDiv = document.getElementById('ar-success');
+    const resultsDiv = document.getElementById('ar-results');
+
+    errorDiv.classList.remove('show'); successDiv.classList.remove('show');
+    resultsDiv.style.display = 'none';
+    btn.disabled = true; loading.classList.add('show');
+
+    try {
+        const resp = await fetch('/api/auto-rebase/run', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ projects: projects.length > 0 ? projects : undefined })
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error || 'Unknown error');
+
+        let succeeded = 0, failed = 0, skipped = 0;
+        const tbody = document.getElementById('ar-results-body');
+        tbody.innerHTML = '';
+
+        data.results.forEach(r => {
+            if (r.result === 'success') succeeded++;
+            else if (r.result === 'failed') failed++;
+            else skipped++;
+
+            const row = document.createElement('tr');
+            let badge = '';
+            if (r.result === 'success') badge = '<span class="badge badge-success">✓ Success</span>';
+            else if (r.result === 'failed') badge = '<span class="badge badge-danger">✗ Failed</span>';
+            else badge = '<span class="badge badge-warning">⊘ Skipped</span>';
+
+            row.innerHTML = `
+                <td><strong style="color: var(--text);">${r.project}</strong></td>
+                <td>${badge}</td>
+                <td style="color: var(--text-secondary);">${r.message}</td>
+            `;
+            tbody.appendChild(row);
+        });
+
+        document.getElementById('ar-success-count').textContent = succeeded;
+        document.getElementById('ar-failed-count').textContent = failed;
+        document.getElementById('ar-skipped-count').textContent = skipped;
+
+        resultsDiv.style.display = 'block';
+        successDiv.textContent = `✅ Rebase complete: ${succeeded} succeeded, ${failed} failed, ${skipped} skipped`;
+        successDiv.classList.add('show');
+    } catch (e) {
+        errorDiv.textContent = '❌ ' + e.message;
+        errorDiv.classList.add('show');
+    } finally {
+        btn.disabled = false; loading.classList.remove('show');
+    }
+}
+
+// Auto-check on load
+checkStatus();
+</script>
+{% endblock %}

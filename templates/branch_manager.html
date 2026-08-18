@@ -1,0 +1,368 @@
+{% extends "base.html" %}
+{% block title %}Branch Manager - Mozart Dashboard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>🌿 Branch Manager</h2>
+    <p>View, delete, and revert changes in DHAL and MozartTests</p>
+</div>
+
+<div class="card">
+    <h3>Select Repository</h3>
+    <div style="display: flex; gap: 10px; margin-bottom: 16px;">
+        <button class="btn btn-primary" id="repo-dhal-btn" onclick="loadBranches('dhal')">📦 DHAL</button>
+        <button class="btn btn-secondary" id="repo-mt-btn" onclick="loadBranches('MozartTests')">📦 MozartTests</button>
+    </div>
+    <div class="loading" id="bm-loading">
+        <div class="spinner"></div>
+        <span>Loading branches...</span>
+    </div>
+</div>
+
+<div class="alert alert-error" id="bm-error"></div>
+<div class="alert alert-success" id="bm-success"></div>
+
+<!-- Modified Files / Revert Section -->
+<div class="card" id="bm-dirty" style="display: none;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px;">
+        <h3 style="margin: 0;">📝 Modified Files</h3>
+        <div style="display: flex; gap: 10px;">
+            <button class="btn btn-secondary" onclick="loadDirtyFiles()" style="padding:7px 14px; font-size:12px;">🔄 Refresh</button>
+            <button class="btn btn-danger" id="bm-revert-selected-btn" onclick="revertSelected()" disabled style="padding:7px 14px; font-size:12px;">
+                ↩️ Revert Selected
+            </button>
+            <button class="btn btn-danger" onclick="revertAll()" style="padding:7px 14px; font-size:12px; background: linear-gradient(135deg, #dc2626, #b91c1c);">
+                ↩️ Revert All
+            </button>
+        </div>
+    </div>
+    <div id="bm-dirty-empty" style="display: none; color: var(--text-muted); font-size: 13px; padding: 16px; text-align: center;">
+        ✨ Working tree is clean — no modified files.
+    </div>
+    <div style="overflow-x: auto; border-radius: var(--radius-sm); border: 1px solid var(--border);" id="bm-dirty-table-wrap">
+        <table class="results-table">
+            <thead>
+                <tr>
+                    <th style="width: 40px;"></th>
+                    <th>File</th>
+                    <th>Status</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody id="bm-dirty-body"></tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Branches Section -->
+<div class="card" id="bm-results" style="display: none;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px;">
+        <div>
+            <h3 style="margin: 0;" id="bm-repo-title">-</h3>
+            <p style="color: var(--text-muted); font-size: 12px; margin-top: 4px;" id="bm-repo-path">-</p>
+        </div>
+        <div style="display: flex; gap: 10px; align-items: center;">
+            <span style="font-size: 13px; color: var(--text-secondary);" id="bm-selected-count">0 selected</span>
+            <button class="btn btn-danger" id="bm-delete-btn" onclick="deleteSelected()" disabled>
+                🗑️ Delete Selected
+            </button>
+        </div>
+    </div>
+
+    <div style="margin-bottom: 12px; display: flex; gap: 10px; align-items: center;">
+        <label style="font-size: 13px; color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; gap: 6px;">
+            <input type="checkbox" id="bm-select-all" onchange="toggleSelectAll()" style="accent-color: var(--primary); width: 16px; height: 16px;">
+            Select All (except current & protected)
+        </label>
+    </div>
+
+    <div style="overflow-x: auto; border-radius: var(--radius-sm); border: 1px solid var(--border);">
+        <table class="results-table">
+            <thead>
+                <tr>
+                    <th style="width: 40px;"></th>
+                    <th>Branch</th>
+                    <th>Last Commit</th>
+                    <th>Subject</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="bm-table-body"></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentRepo = '';
+let branches = [];
+
+async function loadBranches(repo) {
+    currentRepo = repo;
+    const loading = document.getElementById('bm-loading');
+    const errorDiv = document.getElementById('bm-error');
+    const successDiv = document.getElementById('bm-success');
+    const resultsDiv = document.getElementById('bm-results');
+
+    errorDiv.classList.remove('show');
+    successDiv.classList.remove('show');
+    resultsDiv.style.display = 'none';
+    document.getElementById('bm-dirty').style.display = 'none';
+    loading.classList.add('show');
+
+    // Update button styles
+    document.getElementById('repo-dhal-btn').className = repo === 'dhal' ? 'btn btn-primary' : 'btn btn-secondary';
+    document.getElementById('repo-mt-btn').className = repo === 'MozartTests' ? 'btn btn-primary' : 'btn btn-secondary';
+
+    try {
+        const resp = await fetch('/api/branches/list', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ repo })
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error || 'Unknown error');
+
+        branches = data.branches;
+        document.getElementById('bm-repo-title').textContent = `${repo} — ${data.total} branches (on: ${data.current_branch})`;
+        document.getElementById('bm-repo-path').textContent = data.repo_path;
+
+        const tbody = document.getElementById('bm-table-body');
+        tbody.innerHTML = '';
+        data.branches.forEach(b => {
+            const row = document.createElement('tr');
+            const isProtected = b.is_current || ['mainline', 'main', 'master'].includes(b.name);
+            const checkDisabled = isProtected ? 'disabled' : '';
+            
+            let nameBadge = '';
+            if (b.is_current) nameBadge = '<span class="badge badge-success" style="margin-left:8px;">current</span>';
+            else if (['mainline', 'main', 'master'].includes(b.name)) nameBadge = '<span class="badge badge-info" style="margin-left:8px;">protected</span>';
+
+            row.innerHTML = `
+                <td><input type="checkbox" class="branch-check" value="${b.name}" ${checkDisabled} onchange="updateSelectedCount()" style="accent-color: var(--primary); width: 15px; height: 15px;"></td>
+                <td><strong style="color: var(--text);">${b.name}</strong>${nameBadge}</td>
+                <td style="color: var(--text-muted); font-size: 12px;">${b.last_commit}</td>
+                <td style="color: var(--text-secondary); font-size: 12px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${b.subject}</td>
+                <td>
+                    ${!b.is_current ? `<button class="btn btn-secondary" style="padding:5px 10px;font-size:11px;" onclick="checkoutBranch('${b.name}')">⤴ checkout</button>` : ''}
+                </td>
+            `;
+            tbody.appendChild(row);
+        });
+
+        resultsDiv.style.display = 'block';
+        updateSelectedCount();
+        loadDirtyFiles();
+
+    } catch (e) {
+        errorDiv.textContent = '❌ ' + e.message;
+        errorDiv.classList.add('show');
+    } finally {
+        loading.classList.remove('show');
+    }
+}
+
+function toggleSelectAll() {
+    const checked = document.getElementById('bm-select-all').checked;
+    document.querySelectorAll('.branch-check:not(:disabled)').forEach(cb => cb.checked = checked);
+    updateSelectedCount();
+}
+
+function updateSelectedCount() {
+    const selected = document.querySelectorAll('.branch-check:checked').length;
+    document.getElementById('bm-selected-count').textContent = `${selected} selected`;
+    document.getElementById('bm-delete-btn').disabled = selected === 0;
+}
+
+async function deleteSelected() {
+    const checkboxes = document.querySelectorAll('.branch-check:checked');
+    const branchNames = Array.from(checkboxes).map(cb => cb.value);
+
+    if (branchNames.length === 0) return;
+    if (!confirm(`Delete ${branchNames.length} branch(es)?\n\n${branchNames.join('\n')}\n\nThis cannot be undone!`)) return;
+
+    const btn = document.getElementById('bm-delete-btn');
+    const errorDiv = document.getElementById('bm-error');
+    const successDiv = document.getElementById('bm-success');
+
+    errorDiv.classList.remove('show');
+    successDiv.classList.remove('show');
+    btn.disabled = true;
+    btn.textContent = '⏳ Deleting...';
+
+    try {
+        const resp = await fetch('/api/branches/delete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ repo: currentRepo, branches: branchNames })
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error || 'Unknown error');
+
+        successDiv.textContent = `✅ Deleted ${data.deleted}/${data.total} branch(es)`;
+        successDiv.classList.add('show');
+        loadBranches(currentRepo);
+
+    } catch (e) {
+        errorDiv.textContent = '❌ ' + e.message;
+        errorDiv.classList.add('show');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '🗑️ Delete Selected';
+    }
+}
+
+async function checkoutBranch(name) {
+    try {
+        const resp = await fetch('/api/branches/checkout', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ repo: currentRepo, branch: name })
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error || 'Unknown error');
+        loadBranches(currentRepo);
+    } catch (e) {
+        alert('Checkout failed: ' + e.message);
+    }
+}
+
+// ============ DIRTY FILES / REVERT ============
+
+async function loadDirtyFiles() {
+    const dirtyDiv = document.getElementById('bm-dirty');
+    const tbody = document.getElementById('bm-dirty-body');
+    const emptyDiv = document.getElementById('bm-dirty-empty');
+    const tableWrap = document.getElementById('bm-dirty-table-wrap');
+
+    try {
+        const resp = await fetch('/api/branches/modified', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ repo: currentRepo })
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) return;
+
+        dirtyDiv.style.display = 'block';
+
+        if (data.files.length === 0) {
+            emptyDiv.style.display = 'block';
+            tableWrap.style.display = 'none';
+            return;
+        }
+
+        emptyDiv.style.display = 'none';
+        tableWrap.style.display = 'block';
+        tbody.innerHTML = '';
+
+        data.files.forEach(f => {
+            const row = document.createElement('tr');
+            let statusBadge = '';
+            if (f.status === 'M') statusBadge = '<span class="badge badge-warning">Modified</span>';
+            else if (f.status === '??') statusBadge = '<span class="badge badge-info">Untracked</span>';
+            else if (f.status === 'A') statusBadge = '<span class="badge badge-success">Added</span>';
+            else if (f.status === 'D') statusBadge = '<span class="badge badge-danger">Deleted</span>';
+            else statusBadge = `<span class="badge">${f.status_label}</span>`;
+
+            row.innerHTML = `
+                <td><input type="checkbox" class="dirty-check" value="${f.file}" onchange="updateRevertCount()" style="accent-color: var(--primary); width: 15px; height: 15px;"></td>
+                <td><code style="font-size: 12px;">${f.file}</code></td>
+                <td>${statusBadge}</td>
+                <td><button class="btn btn-secondary" style="padding:4px 10px;font-size:11px;" onclick="revertSingle(this, '${f.file.replace(/'/g, "\\'")}')">↩️ Revert</button></td>
+            `;
+            tbody.appendChild(row);
+        });
+
+        updateRevertCount();
+    } catch (e) {
+        console.error('Failed to load dirty files:', e);
+    }
+}
+
+function updateRevertCount() {
+    const selected = document.querySelectorAll('.dirty-check:checked').length;
+    document.getElementById('bm-revert-selected-btn').disabled = selected === 0;
+}
+
+async function revertSingle(btn, filepath) {
+    if (!confirm(`Revert changes to:\n${filepath}\n\nThis will discard all changes. Continue?`)) return;
+
+    btn.disabled = true;
+    btn.textContent = '⏳';
+
+    try {
+        const resp = await fetch('/api/branches/revert', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ repo: currentRepo, files: [filepath] })
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error);
+
+        btn.textContent = '✓';
+        setTimeout(() => loadDirtyFiles(), 500);
+    } catch (e) {
+        btn.textContent = '❌';
+        alert('Revert failed: ' + e.message);
+    }
+}
+
+async function revertSelected() {
+    const checkboxes = document.querySelectorAll('.dirty-check:checked');
+    const files = Array.from(checkboxes).map(cb => cb.value);
+
+    if (files.length === 0) return;
+    if (!confirm(`Revert ${files.length} file(s)?\n\n${files.join('\n')}\n\nThis will discard all changes!`)) return;
+
+    const btn = document.getElementById('bm-revert-selected-btn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Reverting...';
+
+    try {
+        const resp = await fetch('/api/branches/revert', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ repo: currentRepo, files: files })
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error);
+
+        const successDiv = document.getElementById('bm-success');
+        successDiv.textContent = `✅ Reverted ${data.reverted}/${data.total} file(s)`;
+        successDiv.classList.add('show');
+        loadDirtyFiles();
+    } catch (e) {
+        alert('Revert failed: ' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '↩️ Revert Selected';
+    }
+}
+
+async function revertAll() {
+    if (!confirm(`⚠️ Revert ALL changes in ${currentRepo}?\n\nThis will discard ALL uncommitted modifications. This cannot be undone!`)) return;
+
+    try {
+        const resp = await fetch('/api/branches/revert', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ repo: currentRepo, revert_all: true })
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error);
+
+        const successDiv = document.getElementById('bm-success');
+        successDiv.textContent = '✅ All changes reverted successfully';
+        successDiv.classList.add('show');
+        loadDirtyFiles();
+    } catch (e) {
+        alert('Revert failed: ' + e.message);
+    }
+}
+
+// Auto-load dhal on page load
+loadBranches('dhal');
+</script>
+{% endblock %}

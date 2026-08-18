@@ -1,0 +1,667 @@
+{% extends "base.html" %}
+{% block title %}CR Comment Analyzer - Mozart Dashboard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>💬 CR Comment Analyzer</h2>
+    <p>Fetch CR comments, merge AutoSDE + reviewer feedback into consolidated action items</p>
+</div>
+
+<div class="card">
+    <h3>Fetch Code Review</h3>
+    <div class="form-group">
+        <label>CR URL or ID</label>
+        <input type="text" id="cr-input" placeholder="https://code.example.com/reviews/CR-12345678/revisions/1  or  CR-12345678">
+    </div>
+    <button class="btn btn-primary" id="cr-fetch-btn" onclick="fetchCR()">
+        🔍 Analyze & Merge Comments
+    </button>
+    <div class="loading" id="cr-loading">
+        <div class="spinner"></div>
+        <span>Fetching CR and merging comments...</span>
+    </div>
+</div>
+
+<div class="alert alert-error" id="cr-error"></div>
+<div class="alert alert-success" id="cr-success"></div>
+
+<!-- CR Info -->
+<div class="card" id="cr-info" style="display: none;">
+    <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 12px;">
+        <div>
+            <h3 style="margin-bottom: 6px;" id="cr-title">-</h3>
+            <p style="color: var(--text-muted); font-size: 13px;" id="cr-meta"></p>
+        </div>
+        <span class="badge badge-info" id="cr-status-badge">-</span>
+    </div>
+</div>
+
+<!-- Stats -->
+<div id="cr-stats" style="display: none; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 24px;">
+    <div class="stat-box" style="background: var(--danger-bg);">
+        <div class="stat-value" style="color: var(--danger);" id="cr-must-fix">0</div>
+        <div class="stat-label">Must Fix</div>
+    </div>
+    <div class="stat-box" style="background: var(--warning-bg);">
+        <div class="stat-value" style="color: var(--warning);" id="cr-should-fix">0</div>
+        <div class="stat-label">Should Fix</div>
+    </div>
+    <div class="stat-box" style="background: var(--info-bg);">
+        <div class="stat-value" style="color: var(--info);" id="cr-suggestion">0</div>
+        <div class="stat-label">Suggestion</div>
+    </div>
+    <div class="stat-box" style="background: rgba(148,163,184,0.1);">
+        <div class="stat-value" style="color: var(--text-secondary);" id="cr-nit">0</div>
+        <div class="stat-label">Nit</div>
+    </div>
+    <div class="stat-box">
+        <div class="stat-value" style="color: var(--text);" id="cr-total">0</div>
+        <div class="stat-label">Action Items</div>
+    </div>
+</div>
+
+<!-- Merge info banner -->
+<div class="alert alert-success" id="cr-merge-info" style="display: none;"></div>
+
+<!-- Branch Creation Card -->
+<div class="card" id="cr-branch-card" style="display: none;">
+    <h3>🌿 Workspace Branch</h3>
+    <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 14px;">
+        Create a branch before applying fixes. Changes will be applied to your local workspace.
+    </p>
+    <div style="display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;">
+        <div class="form-group" style="margin-bottom: 0; flex: 1; min-width: 200px;">
+            <label>Branch Name</label>
+            <input type="text" id="cr-branch-name" readonly style="opacity: 0.8;">
+        </div>
+        <button class="btn btn-success" id="cr-branch-btn" onclick="createBranch()">
+            🌿 Create & Checkout Branch
+        </button>
+    </div>
+    <div class="loading" id="cr-branch-loading">
+        <div class="spinner"></div>
+        <span>Creating branch...</span>
+    </div>
+    <div class="alert alert-success" id="cr-branch-success" style="margin-top: 12px;"></div>
+    <div class="alert alert-error" id="cr-branch-error" style="margin-top: 12px;"></div>
+</div>
+
+<!-- View Toggle -->
+<div id="cr-view-toggle" style="display: none; margin-bottom: 20px;">
+    <div style="display: flex; gap: 0; background: var(--bg-secondary); border-radius: var(--radius-sm); padding: 4px; width: fit-content; border: 1px solid var(--border);">
+        <button onclick="switchView('priority')" id="view-priority" style="padding: 8px 18px; border: none; background: linear-gradient(135deg, var(--primary), var(--primary-dark)); border-radius: 7px; cursor: pointer; font-size: 12px; font-weight: 600; color: #fff;">By Priority</button>
+        <button onclick="switchView('file')" id="view-file" style="padding: 8px 18px; border: none; background: transparent; border-radius: 7px; cursor: pointer; font-size: 12px; font-weight: 600; color: var(--text-muted);">By File</button>
+    </div>
+</div>
+
+<!-- Action Items -->
+<div id="cr-priority-view" style="display: none;"></div>
+<div id="cr-file-view" style="display: none;"></div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+    .action-card {
+        background: rgba(15, 23, 42, 0.4);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 22px;
+        margin-bottom: 16px;
+        transition: border-color 0.2s;
+    }
+    .action-card:hover { border-color: var(--border-light); }
+    .action-card.must-fix { border-left: 4px solid var(--danger); }
+    .action-card.should-fix { border-left: 4px solid var(--warning); }
+    .action-card.suggestion { border-left: 4px solid var(--info); }
+    .action-card.nit { border-left: 4px solid var(--text-muted); }
+
+    .action-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        margin-bottom: 12px;
+        gap: 12px;
+    }
+    .action-location {
+        font-family: 'JetBrains Mono', 'SF Mono', monospace;
+        font-size: 12px;
+        color: var(--primary-light);
+        background: var(--primary-glow);
+        padding: 4px 10px;
+        border-radius: 6px;
+    }
+    .action-issue {
+        font-size: 14px;
+        color: var(--text);
+        line-height: 1.6;
+        margin-bottom: 12px;
+    }
+    .action-section {
+        margin-top: 12px;
+        padding: 12px 14px;
+        background: rgba(15, 23, 42, 0.5);
+        border-radius: 8px;
+        border: 1px solid var(--border);
+    }
+    .action-section-label {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+        color: var(--text-muted);
+        margin-bottom: 6px;
+        font-weight: 600;
+    }
+    .action-section-content {
+        font-size: 13px;
+        color: var(--text-secondary);
+        line-height: 1.5;
+    }
+    .code-fix {
+        background: rgba(16, 185, 129, 0.05);
+        border: 1px solid rgba(16, 185, 129, 0.2);
+        border-radius: 8px;
+        padding: 14px;
+        margin-top: 12px;
+        font-family: 'JetBrains Mono', 'SF Mono', monospace;
+        font-size: 12px;
+        color: var(--success);
+        overflow-x: auto;
+        white-space: pre-wrap;
+        line-height: 1.6;
+    }
+    .code-fix-header {
+        font-size: 11px;
+        color: var(--success);
+        font-family: 'Inter', sans-serif;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        font-weight: 600;
+        margin-bottom: 10px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+    .apply-btn {
+        margin-top: 10px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 16px;
+        background: linear-gradient(135deg, #10b981, #059669);
+        color: #fff;
+        border: none;
+        border-radius: 7px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+        font-family: 'Inter', sans-serif;
+    }
+    .apply-btn:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+    }
+    .apply-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        transform: none !important;
+    }
+    .apply-btn.applied {
+        background: rgba(16, 185, 129, 0.15);
+        color: var(--success);
+        cursor: default;
+    }
+    .sources-bar {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin-top: 14px;
+        padding-top: 12px;
+        border-top: 1px solid var(--border);
+    }
+    .source-chip {
+        font-size: 11px;
+        padding: 3px 8px;
+        border-radius: 5px;
+        font-weight: 500;
+    }
+    .source-human { background: rgba(168, 85, 247, 0.1); color: #a855f7; }
+    .source-bot { background: rgba(99, 102, 241, 0.1); color: var(--primary-light); }
+    .merged-badge {
+        background: rgba(6, 182, 212, 0.1);
+        color: var(--accent);
+        padding: 3px 8px;
+        border-radius: 5px;
+        font-size: 10px;
+        font-weight: 600;
+    }
+    .file-group {
+        margin-bottom: 28px;
+    }
+    .file-group-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 18px;
+        background: rgba(99, 102, 241, 0.04);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        margin-bottom: 14px;
+    }
+    .file-group-header code { font-size: 13px; }
+    .file-group-header .count-badge {
+        background: var(--primary-glow);
+        color: var(--primary-light);
+        padding: 3px 10px;
+        border-radius: 10px;
+        font-size: 11px;
+        font-weight: 600;
+    }
+</style>
+
+<script>
+let crData = null;
+let branchCreated = false;
+let fixCodes = [];  // Store fix codes by index to avoid escaping issues
+let originalCodes = [];  // Store original codes to search for
+
+async function fetchCR() {
+    const input = document.getElementById('cr-input').value.trim();
+    if (!input) { alert('Please enter a CR URL or ID'); return; }
+
+    const btn = document.getElementById('cr-fetch-btn');
+    const loading = document.getElementById('cr-loading');
+    const errorDiv = document.getElementById('cr-error');
+    const successDiv = document.getElementById('cr-success');
+
+    errorDiv.classList.remove('show');
+    successDiv.classList.remove('show');
+    hideResults();
+    btn.disabled = true;
+    loading.classList.add('show');
+
+    try {
+        const resp = await fetch('/api/cr-analyzer/fetch', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ cr_id: input })
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error || 'Unknown error');
+
+        crData = data;
+        renderResults(data);
+    } catch (e) {
+        errorDiv.textContent = '❌ ' + e.message;
+        errorDiv.classList.add('show');
+    } finally {
+        btn.disabled = false;
+        loading.classList.remove('show');
+    }
+}
+
+async function createBranch() {
+    if (!crData) return;
+    const btn = document.getElementById('cr-branch-btn');
+    const loading = document.getElementById('cr-branch-loading');
+    const successDiv = document.getElementById('cr-branch-success');
+    const errorDiv = document.getElementById('cr-branch-error');
+
+    successDiv.classList.remove('show');
+    errorDiv.classList.remove('show');
+    btn.disabled = true;
+    loading.classList.add('show');
+
+    try {
+        const resp = await fetch('/api/cr-analyzer/create-branch', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ cr_id: crData.cr_id, package: 'dhal' })
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error || 'Unknown error');
+
+        branchCreated = true;
+        successDiv.textContent = `✅ ${data.message}`;
+        successDiv.classList.add('show');
+        btn.textContent = '✓ Branch Ready';
+        btn.classList.add('applied');
+
+        // Enable all apply buttons
+        document.querySelectorAll('.apply-btn').forEach(b => b.disabled = false);
+    } catch (e) {
+        errorDiv.textContent = '❌ ' + e.message;
+        errorDiv.classList.add('show');
+    } finally {
+        btn.disabled = false;
+        loading.classList.remove('show');
+    }
+}
+
+async function applyFix(btn, file, line, fixIndex) {
+    if (!branchCreated) {
+        alert('Please create a branch first before applying fixes.');
+        return;
+    }
+
+    const fixCode = fixCodes[fixIndex];
+    const searchCode = originalCodes[fixIndex];
+    if (!fixCode) {
+        alert('No fix code found for this item.');
+        return;
+    }
+    if (!searchCode) {
+        alert('Could not determine the original code to replace. Please apply this fix manually.');
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = '⏳ Applying...';
+
+    try {
+        const resp = await fetch('/api/cr-analyzer/apply-fix', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ file: file, search_code: searchCode, fix_code: fixCode })
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error || 'Unknown error');
+
+        btn.textContent = '✓ Applied';
+        btn.classList.add('applied');
+        btn.disabled = true;
+    } catch (e) {
+        btn.textContent = '❌ Failed';
+        btn.style.background = 'var(--danger-bg)';
+        btn.style.color = 'var(--danger)';
+        alert('Apply failed: ' + e.message);
+        setTimeout(() => {
+            btn.textContent = '⚡ Apply Fix';
+            btn.style.background = '';
+            btn.style.color = '';
+            btn.disabled = false;
+        }, 3000);
+    }
+}
+
+async function generateFix(fixIndex, file) {
+    const searchTextarea = document.getElementById(`search-${fixIndex}`);
+    const fixTextarea = document.getElementById(`fix-${fixIndex}`);
+    const commentsInput = document.getElementById(`comments-${fixIndex}`);
+
+    const originalCode = searchTextarea.value.trim();
+    const commentsSummary = commentsInput ? commentsInput.value : '';
+
+    if (!originalCode) {
+        alert('No original code to generate fix from. Please paste the code in the "Original code" field first.');
+        return;
+    }
+
+    fixTextarea.value = '⏳ Generating fix...';
+
+    try {
+        const resp = await fetch('/api/cr-analyzer/generate-fix', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                original_code: originalCode,
+                comments_summary: commentsSummary,
+                file: file,
+            })
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error || 'Unknown error');
+
+        fixTextarea.value = data.fix_code;
+        fixTextarea.style.borderColor = data.changed ? 'rgba(16, 185, 129, 0.5)' : 'rgba(245, 158, 11, 0.5)';
+    } catch (e) {
+        fixTextarea.value = `// Error generating fix: ${e.message}\n// Please write the fix manually`;
+        alert('Generate fix failed: ' + e.message);
+    }
+}
+
+async function applyFixEditable(btn, file, fixIndex) {
+    if (!branchCreated) {
+        alert('Please create a branch first before applying fixes.');
+        return;
+    }
+
+    const searchTextarea = document.getElementById(`search-${fixIndex}`);
+    const fixTextarea = document.getElementById(`fix-${fixIndex}`);
+
+    const searchCode = searchTextarea.value.trim();
+    const fixCode = fixTextarea.value.trim();
+
+    if (!searchCode) {
+        alert('Please paste the original code (the exact code to find in the file) in the "Find in file" field.');
+        searchTextarea.focus();
+        return;
+    }
+    if (!fixCode) {
+        alert('Please enter the replacement code in the "Replace with" field.');
+        fixTextarea.focus();
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = '⏳ Applying...';
+
+    try {
+        const resp = await fetch('/api/cr-analyzer/apply-fix', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ file: file, search_code: searchCode, fix_code: fixCode })
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error || 'Unknown error');
+
+        btn.textContent = '✓ Applied (' + data.match_type + ')';
+        btn.classList.add('applied');
+        btn.disabled = true;
+    } catch (e) {
+        btn.textContent = '❌ Failed';
+        btn.style.background = 'var(--danger-bg)';
+        btn.style.color = 'var(--danger)';
+        alert('Apply failed: ' + e.message);
+        setTimeout(() => {
+            btn.textContent = '⚡ Apply Fix';
+            btn.style.background = '';
+            btn.style.color = '';
+            btn.disabled = false;
+        }, 3000);
+    }
+}
+
+function hideResults() {
+    ['cr-info','cr-stats','cr-view-toggle','cr-priority-view','cr-file-view','cr-merge-info','cr-branch-card'].forEach(id => {
+        const el = document.getElementById(id);
+        el.style.display = 'none';
+    });
+    branchCreated = false;
+}
+
+function renderResults(data) {
+    // CR Info
+    document.getElementById('cr-info').style.display = 'block';
+    document.getElementById('cr-title').textContent = data.summary || data.cr_id;
+    document.getElementById('cr-meta').textContent = `${data.cr_id} • Rev ${data.revision} • by ${data.author}`;
+    document.getElementById('cr-status-badge').textContent = data.status;
+
+    // Stats
+    const statsDiv = document.getElementById('cr-stats');
+    statsDiv.style.display = 'grid';
+    document.getElementById('cr-must-fix').textContent = data.category_counts['must-fix'] || 0;
+    document.getElementById('cr-should-fix').textContent = data.category_counts['should-fix'] || 0;
+    document.getElementById('cr-suggestion').textContent = data.category_counts['suggestion'] || 0;
+    document.getElementById('cr-nit').textContent = data.category_counts['nit'] || 0;
+    document.getElementById('cr-total').textContent = data.total_actions;
+
+    // Merge info
+    if (data.total_raw_comments > data.total_actions) {
+        const mergeInfo = document.getElementById('cr-merge-info');
+        mergeInfo.textContent = `🔗 Merged ${data.total_raw_comments} raw comments into ${data.total_actions} action items (AutoSDE + reviewer feedback combined per issue)`;
+        mergeInfo.style.display = 'block';
+    }
+
+    // Branch card
+    const branchCard = document.getElementById('cr-branch-card');
+    branchCard.style.display = 'block';
+    document.getElementById('cr-branch-name').value = `cr-fix/${data.cr_id}`;
+
+    // Views
+    document.getElementById('cr-view-toggle').style.display = 'block';
+    renderPriorityView(data.actions);
+    renderFileView(data.by_file);
+    document.getElementById('cr-priority-view').style.display = 'block';
+}
+
+function renderPriorityView(actions) {
+    const container = document.getElementById('cr-priority-view');
+    container.innerHTML = '';
+    fixCodes = [];  // Reset
+    originalCodes = [];  // Reset
+    if (!actions.length) {
+        container.innerHTML = '<div class="card"><p style="color: var(--text-muted);">No actionable comments found. 🎉</p></div>';
+        return;
+    }
+    actions.forEach((a, i) => container.appendChild(createActionCard(a, i + 1)));
+}
+
+function renderFileView(byFile) {
+    const container = document.getElementById('cr-file-view');
+    container.innerHTML = '';
+    Object.keys(byFile).forEach(file => {
+        const group = document.createElement('div');
+        group.className = 'file-group';
+        group.innerHTML = `<div class="file-group-header"><span>📄</span><code>${file}</code><span class="count-badge">${byFile[file].length}</span></div>`;
+        byFile[file].forEach((a, i) => group.appendChild(createActionCard(a, i + 1)));
+        container.appendChild(group);
+    });
+}
+
+function createActionCard(action, num) {
+    const card = document.createElement('div');
+    card.className = `action-card ${action.category}`;
+
+    const categoryBadge = getCategoryBadge(action.category);
+    const mergedBadge = action.num_comments > 1 ? `<span class="merged-badge">🔗 ${action.num_comments} comments merged</span>` : '';
+    const fixedBadge = action.is_fixed ? '<span style="background:var(--success-bg);color:var(--success);padding:3px 8px;border-radius:5px;font-size:10px;font-weight:600;">✓ FIXED</span>' : '';
+    const location = action.file ? `<span class="action-location">${action.file}${action.line ? ':' + action.line : ''}</span>` : '';
+
+    // Impact section
+    let impactHtml = '';
+    if (action.impact) {
+        impactHtml = `<div class="action-section"><div class="action-section-label">⚡ Impact</div><div class="action-section-content">${escapeHtml(action.impact)}</div></div>`;
+    }
+
+    // Solution section
+    let solutionHtml = '';
+    if (action.solution) {
+        solutionHtml = `<div class="action-section"><div class="action-section-label">🎯 How to Fix</div><div class="action-section-content">${escapeHtml(action.solution)}</div></div>`;
+    }
+
+    // Code fix
+    let codeFixHtml = '';
+    if (action.fix_code || action.original_code) {
+        const fixIndex = fixCodes.length;
+        fixCodes.push(action.fix_code || '');
+        originalCodes.push(action.original_code || '');
+        const escapedOriginal = escapeHtml(action.original_code || '');
+        const escapedFix = escapeHtml(action.fix_code || '');
+        const applyDisabled = branchCreated ? '' : 'disabled';
+        const escapedFile = (action.file || '').replace(/'/g, "\\'");
+        const escapedLine = (action.line || '').replace(/'/g, "\\'");
+        
+        // Summarize what the comments are asking
+        let commentsSummary = action.issue || '';
+        if (action.solution) commentsSummary += ' ' + action.solution;
+        if (action.impact) commentsSummary += ' ' + action.impact;
+
+        codeFixHtml = `
+            <div style="margin-top:14px; display:grid; gap:10px;">
+                <div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                        <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.8px;color:var(--danger);font-weight:600;">🔍 Original code (in file):</div>
+                    </div>
+                    <textarea id="search-${fixIndex}" rows="4" style="width:100%;padding:10px;background:rgba(244,63,94,0.05);border:1px solid rgba(244,63,94,0.2);border-radius:8px;font-family:'JetBrains Mono','SF Mono',monospace;font-size:12px;color:var(--text);resize:vertical;">${escapedOriginal}</textarea>
+                </div>
+                <div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                        <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.8px;color:var(--success);font-weight:600;">✅ Replace with (generated fix):</div>
+                        <button class="btn btn-secondary" style="padding:5px 12px;font-size:11px;" onclick="generateFix(${fixIndex}, '${escapedFile}')">
+                            🤖 Generate Fix
+                        </button>
+                    </div>
+                    <textarea id="fix-${fixIndex}" rows="4" style="width:100%;padding:10px;background:rgba(16,185,129,0.05);border:1px solid rgba(16,185,129,0.2);border-radius:8px;font-family:'JetBrains Mono','SF Mono',monospace;font-size:12px;color:var(--text);resize:vertical;">${escapedFix}</textarea>
+                </div>
+                <input type="hidden" id="comments-${fixIndex}" value="${escapeHtml(commentsSummary)}">
+            </div>
+            <button class="apply-btn" ${applyDisabled}
+                onclick="applyFixEditable(this, '${escapedFile}', ${fixIndex})">
+                ⚡ Apply Fix
+            </button>
+        `;
+    }
+
+    // Sources bar
+    let sourcesHtml = '';
+    if (action.sources && action.sources.length > 0) {
+        const chips = action.sources.map(s => {
+            const cls = s.is_human ? 'source-human' : 'source-bot';
+            const icon = s.is_human ? '👤' : '🤖';
+            return `<span class="source-chip ${cls}">${icon} ${s.author}</span>`;
+        }).join('');
+        sourcesHtml = `<div class="sources-bar">${chips}</div>`;
+    }
+
+    card.innerHTML = `
+        <div class="action-header">
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                ${categoryBadge} ${mergedBadge} ${fixedBadge}
+            </div>
+            ${location}
+        </div>
+        <div class="action-issue">${escapeHtml(action.issue)}</div>
+        ${impactHtml}
+        ${solutionHtml}
+        ${codeFixHtml}
+        ${sourcesHtml}
+    `;
+    return card;
+}
+
+function getCategoryBadge(category) {
+    const map = {
+        'must-fix': '<span class="badge badge-danger">🛑 Must Fix</span>',
+        'should-fix': '<span class="badge badge-warning">⚠️ Should Fix</span>',
+        'suggestion': '<span class="badge badge-info">💡 Suggestion</span>',
+        'nit': '<span class="badge" style="background:rgba(148,163,184,0.1);color:var(--text-secondary);">✨ Nit</span>',
+        'info': '<span class="badge" style="background:rgba(148,163,184,0.1);color:var(--text-muted);">ℹ️ Info</span>',
+    };
+    return map[category] || map['info'];
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function switchView(view) {
+    const pv = document.getElementById('cr-priority-view');
+    const fv = document.getElementById('cr-file-view');
+    const pb = document.getElementById('view-priority');
+    const fb = document.getElementById('view-file');
+    if (view === 'priority') {
+        pv.style.display = 'block'; fv.style.display = 'none';
+        pb.style.background = 'linear-gradient(135deg, var(--primary), var(--primary-dark))'; pb.style.color = '#fff';
+        fb.style.background = 'transparent'; fb.style.color = 'var(--text-muted)';
+    } else {
+        pv.style.display = 'none'; fv.style.display = 'block';
+        fb.style.background = 'linear-gradient(135deg, var(--primary), var(--primary-dark))'; fb.style.color = '#fff';
+        pb.style.background = 'transparent'; pb.style.color = 'var(--text-muted)';
+    }
+}
+</script>
+{% endblock %}
